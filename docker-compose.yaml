@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  jupyter:
+    image: quay.io/jupyter/scipy-notebook:latest
+    volumes:
+      - .:/home/jovyan/work
+      - .local:/.local
+    ports:
+      - 9999:8888
+    environment:
+        JUPYTER_ENABLE_LAB: 1
+    command: >
+      bash -c "
+        pip install -r ./work/requirements.txt &&
+        start-notebook.sh --NotebookApp.token='token'
+      "

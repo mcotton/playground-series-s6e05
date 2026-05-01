@@ -1,0 +1,8 @@
+pandas==2.*
+numpy
+matplotlib
+seaborn
+scikit-learn
+#scipy
+xgboost
+optuna
