@@ -53,7 +53,21 @@
 - Submit raw probabilities, not 0/1.
 
 ## Key Observations
-- (User to fill in after EDA)
+- **`year` dominates feature importance (0.336).** Top 3 features (`year` + `stint` + `tyrelife`) carry ~75% of total importance. Healthy distribution otherwise.
+- **2023 has anomalously low pit rate (~1% in train, ~3% in original) vs ~27-30% for other years.** A ~30× difference. Almost certainly a data generation artifact inherited from the source. Explains why `year` is the #1 feature: "if year=2023, predict ~0" is a near-perfect rule.
+- **Train and test year distributions are within 0.2pp** across all four years — model's year-conditional learning generalizes correctly to LB.
+- **Dropping `driver` was the single biggest gain (+0.0086 LB).** High-cardinality categorical with hundreds of low-support levels was driving overfit, not signal.
+- **Custom features `wet_race` and `avg_stint_per_race` were marginally noisy.** Dropping them was net-flat on LB; cleaner feature set retained.
+
+## CV-LB Divergence (Exp 2)
+- Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
+- **Best read of what's happening:** original rows are sequentially coherent, train/test rows are scrambled. Adding original to training shifts the model toward patterns that generalize slightly better to LB (which may be closer to original distribution than to noisy train) but score worse on held-out *train* rows in CV (which are still scrambled).
+- **CV is now less trustworthy.** It's evaluating against scrambled rows; the model is trained on a mix; the score reflects the mix-vs-scrambled gap, not the mix-vs-test gap.
+- **LB improvement may be real or noise.** +0.0017 is small relative to typical LB jitter on Kaggle. Without resubmitting at a different seed, can't be certain. But the *direction* makes sense given the cleaner original data.
+- **Suggested next moves to disambiguate:**
+  - Try `sample_weight` weighted toward original rows (e.g., 1.5x weight on original, 1x on train) — if LB keeps climbing, the original is providing real signal.
+  - Or weighted *against* original (0.5x) — if LB stays high, the original is mostly redundant; if LB drops, the original is doing real work.
+  - Re-run Exp 2 with a different random_state to test stability of the LB improvement (saves a submission if you can hold off until convinced).
 
 ## CV-LB Gap Analysis (after Exp 0)
 - **CV: 0.92156, LB: 0.93671 — LB is +0.015 higher than CV.** Inverse of the usual overfit pattern.
@@ -63,9 +77,19 @@
 - **Don't switch back to plain `StratifiedKFold`** chasing a higher CV — it would inflate CV without helping LB, and you'd lose the early-warning system for race-context overfitting.
 
 ## Open Questions (flagged for EDA)
-- **CV strategy**: data is per-(Driver, Race, Year, Lap). Random KFold will leak race/driver context across folds. Likely want **GroupKFold by `Race`** or by `(Race, Year)`. Worth checking how train/test were split — if test contains races not in train, group CV is mandatory.
-- **Driver coding**: train sample shows both `D109` (anonymized) and `VER` (real abbreviation). Are these from different sources, or is the dataset synthetic-with-some-real-codes? Affects whether `Driver` is a usable feature or just noise.
-- **Class balance**: pit events are rare per lap — likely 5–10% positive, but confirm.
+- ~~**CV strategy**: data is per-(Driver, Race, Year, Lap). Random KFold will leak race/driver context across folds. Likely want **GroupKFold by `Race`** or by `(Race, Year)`.~~ **Resolved:** using StratifiedGroupKFold by `(race, year)`. Empty intersection check skipped — train/test alignment confirmed by year distribution match.
+- ~~**Driver coding**: mixed real (`VER`) and anonymized (`D109`) codes.~~ **Resolved:** dropped `driver` entirely (Exp 6) — was the single biggest LB gain.
+- ~~**Class balance**: pit events are rare per lap — likely 5–10% positive.~~ **Resolved:** ~20% positive overall, but heavily year-dependent (1% in 2023, ~27-30% other years).
+
+## Plan for Rest of Month
+- **Optuna deferred to end of month.** Tuning hyperparameters on a feature set that may still change wastes the search. Save Optuna for the final feature set.
+- **Priority order for remaining experiments (between now and end-of-month):**
+  1. **Reality-check the original blend with the cleaner feature set.** Try Exp 7 minus original concat — does the orig blend still help now that `driver` is dropped?
+  2. **Model class blend (LightGBM + CatBoost averaged with XGBoost).** Standard +0.001-0.003 lever, different inductive biases.
+  3. **More decisive `sample_weight` test** (5x on original) — settles whether to keep orig blend.
+  4. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical.
+  5. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
+- **Then Optuna** on the locked-in feature set.
 
 ## Data Integrity Findings (2026-05-01)
 
@@ -215,3 +239,9 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 |---|------------|----------|----------|-------|
 | 0 | Baseline: XGBClassifier defaults, StratifiedGroupKFold(10) by (race, year), early stopping=50, no FE beyond pipeline | 0.92156 ± 0.00995 | 0.93671 | LB > CV by +0.015 — see "CV-LB Gap" below |
 | 1 | + `wet_race`, `avg_stint_per_race` features | 0.92137 ± 0.00979 | 0.93649 | Δ within std (noise). Features likely redundant with `race` + `compound` — tree already learns these via native categorical splits |
+| 2 | + concat original dataset (`f1_strategy_dataset_v4.csv`), drop `normalized_tyrelife` (not in train/test) | 0.91452 ± 0.01443 | 0.93844 | **CV-LB divergence**: CV down −0.0070, LB up +0.0017. CV std also widened (0.010 → 0.014). See "CV-LB Divergence (Exp 2)" below. |
+| 3 | Exp 2 + `sample_weight=2.0` on original rows, `1.0` on train rows | 0.91276 ± 0.01627 | 0.93851 | Weights confirmed applied (per-fold sum ~577k). CV slightly down vs Exp 2 (−0.0018), std widened (0.0144 → 0.0163). LB +0.00007 vs Exp 2 — essentially identical. 2x weight isn't moving the needle. |
+| 4 | Exp 3 + final fit uses `n_estimators = np.max(best_iters) = 100` instead of `np.mean = 38` | 0.91276 ± 0.01627 (CV unchanged) | 0.93873 | LB +0.00022 vs Exp 3. Confirms hypothesis: final model was undertrained at mean(best_iters). Cheap win. |
+| 5 | Exp 4 + bump `n_estimators` to `int(np.max(best_iters) * 10/9) = 111` | (CV unchanged) | 0.93864 | LB −0.00009 vs Exp 4. Within noise. n_estimators lever is exhausted at ~100 trees. |
+| 6 | Exp 4 − drop `driver` from features | 0.92043 ± 0.01481 | 0.94731 | **Massive: CV +0.0077, LB +0.0086.** Both moved together. Dropping the noisy high-cardinality feature recovered real generalization. |
+| 7 | Exp 6 − drop `wet_race` and `avg_stint_per_race` | 0.92140 ± 0.01483 | 0.94723 | CV +0.001 (noise-ish), LB −0.00008 (essentially flat). Custom features were marginally noisy, no real loss from dropping. Cleaner feature set; keep dropped. |

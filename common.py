@@ -115,9 +115,11 @@ def make_new_features(df):
     target = get_target()
     features = get_features(df)
 
-    df['wet_race'] = df['compound'].map({'HARD': 0, 'MEDIUM': 0, 'SOFT': 0, 'INTERMEDIATE': 1, 'WET': 1})
-    df['avg_stint_per_race'] = df['race'].map(df.groupby('race')['stint'].median())
+    # df['wet_race'] = df['compound'].map({'HARD': 0, 'MEDIUM': 0, 'SOFT': 0, 'INTERMEDIATE': 1, 'WET': 1})
+    # df['avg_stint_per_race'] = df['race'].map(df.groupby('race')['stint'].median())
 
+    df = df.drop('driver', axis=1)
+    
     # # These featues hurt CV and LB, XGBoost didn't like them
     # df['study_x_attendance'] = df['study_hours'] * df['class_attendance']
     # df['study_hours_sq'] = df['study_hours'] ** 2
