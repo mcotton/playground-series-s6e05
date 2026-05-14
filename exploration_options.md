@@ -58,6 +58,8 @@
 - **Train and test year distributions are within 0.2pp** across all four years — model's year-conditional learning generalizes correctly to LB.
 - **Dropping `driver` was the single biggest gain (+0.0086 LB).** High-cardinality categorical with hundreds of low-support levels was driving overfit, not signal.
 - **Custom features `wet_race` and `avg_stint_per_race` were marginally noisy.** Dropping them was net-flat on LB; cleaner feature set retained.
+- **Encoding `year` as categorical (Exp 9) was a clean +0.005 LB.** Year's response to target is non-monotonic (2023 anomaly), so numeric splits are inefficient. Categorical partition splits isolate 2023 in one node. Cleaner than the year_freq attempt (Exp 8), which overfit (CV up, LB down).
+- **Importance ranking is not a proxy for score** (Exp 8 lesson). Year_freq + compound_freq looked promising on importance redistribution, but the actual score went the wrong direction. Always validate with CV/LB.
 
 ## CV-LB Divergence (Exp 2)
 - Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
@@ -245,3 +247,5 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 5 | Exp 4 + bump `n_estimators` to `int(np.max(best_iters) * 10/9) = 111` | (CV unchanged) | 0.93864 | LB −0.00009 vs Exp 4. Within noise. n_estimators lever is exhausted at ~100 trees. |
 | 6 | Exp 4 − drop `driver` from features | 0.92043 ± 0.01481 | 0.94731 | **Massive: CV +0.0077, LB +0.0086.** Both moved together. Dropping the noisy high-cardinality feature recovered real generalization. |
 | 7 | Exp 6 − drop `wet_race` and `avg_stint_per_race` | 0.92140 ± 0.01483 | 0.94723 | CV +0.001 (noise-ish), LB −0.00008 (essentially flat). Custom features were marginally noisy, no real loss from dropping. Cleaner feature set; keep dropped. |
+| 8 | Exp 7 + frequency encoding on `year`, `compound`, `race` | 0.92299 ± 0.01376 | 0.94100 | **CV/LB divergence (overfit signal).** CV +0.0016, LB −0.0062. Importance ranking misleading: year_freq #2, compound_freq mid, race_freq last; combined-with-original showed mild uplift, but model didn't generalize. Rollback to Exp 7's feature set. |
+| 9 | Exp 7 + treat `year` as categorical (add to `categorical_features`) | 0.92414 ± 0.01550 | 0.94778 | **Both directions: CV +0.0027, LB +0.0055.** Categorical partition splits isolate 2023 in one node vs the two splits numeric year needs. Cleaner version of what year_freq was attempting, without the overfit. |
