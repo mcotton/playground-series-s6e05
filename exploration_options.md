@@ -60,6 +60,7 @@
 - **Custom features `wet_race` and `avg_stint_per_race` were marginally noisy.** Dropping them was net-flat on LB; cleaner feature set retained.
 - **Encoding `year` as categorical (Exp 9) was a clean +0.005 LB.** Year's response to target is non-monotonic (2023 anomaly), so numeric splits are inefficient. Categorical partition splits isolate 2023 in one node. Cleaner than the year_freq attempt (Exp 8), which overfit (CV up, LB down).
 - **Importance ranking is not a proxy for score** (Exp 8 lesson). Year_freq + compound_freq looked promising on importance redistribution, but the actual score went the wrong direction. Always validate with CV/LB.
+- **StratifiedGroupKFold stratifies on positives only, not on other features.** With 2023's anomalous low pit rate, the default behavior produced uneven year distributions across folds (2024 spanned 15%-52% across folds). Fix: pass a synthetic stratification key combining target and year (`pitnextlap + '_' + year`) to `.split()`. Cut fold-AUC std by 41% without changing the model. Worth doing before any small-delta tuning (Optuna).
 
 ## CV-LB Divergence (Exp 2)
 - Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
@@ -85,12 +86,12 @@
 
 ## Plan for Rest of Month
 - **Optuna deferred to end of month.** Tuning hyperparameters on a feature set that may still change wastes the search. Save Optuna for the final feature set.
-- **Priority order for remaining experiments (between now and end-of-month):**
-  1. **Reality-check the original blend with the cleaner feature set.** Try Exp 7 minus original concat — does the orig blend still help now that `driver` is dropped?
-  2. **Model class blend (LightGBM + CatBoost averaged with XGBoost).** Standard +0.001-0.003 lever, different inductive biases.
-  3. **More decisive `sample_weight` test** (5x on original) — settles whether to keep orig blend.
-  4. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical.
-  5. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
+- **Current best: LB 0.94832** (Exp 10) — sample_weight=1.25 on original, year as categorical, no driver/wet_race/avg_stint_per_race, StratifiedGroupKFold with combined `(pitnextlap, year)` stratification key, n_estimators=max(best_iters) for final fit.
+- **Priority order for remaining experiments:**
+  1. ~~**Reality-check the original blend.**~~ **Done (Exp 10).** Sweep showed clear inverse-U peak at weight 1.25; original provides modest real signal. Settled.
+  2. **Model class blend (LightGBM + CatBoost averaged with XGBoost).** Standard +0.001-0.003 lever, different inductive biases. **Next.**
+  3. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical.
+  4. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
 - **Then Optuna** on the locked-in feature set.
 
 ## Data Integrity Findings (2026-05-01)
@@ -249,3 +250,7 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 7 | Exp 6 − drop `wet_race` and `avg_stint_per_race` | 0.92140 ± 0.01483 | 0.94723 | CV +0.001 (noise-ish), LB −0.00008 (essentially flat). Custom features were marginally noisy, no real loss from dropping. Cleaner feature set; keep dropped. |
 | 8 | Exp 7 + frequency encoding on `year`, `compound`, `race` | 0.92299 ± 0.01376 | 0.94100 | **CV/LB divergence (overfit signal).** CV +0.0016, LB −0.0062. Importance ranking misleading: year_freq #2, compound_freq mid, race_freq last; combined-with-original showed mild uplift, but model didn't generalize. Rollback to Exp 7's feature set. |
 | 9 | Exp 7 + treat `year` as categorical (add to `categorical_features`) | 0.92414 ± 0.01550 | 0.94778 | **Both directions: CV +0.0027, LB +0.0055.** Categorical partition splits isolate 2023 in one node vs the two splits numeric year needs. Cleaner version of what year_freq was attempting, without the overfit. |
+| **9b** | **CV methodology: switch stratification key to `pitnextlap + '_' + year`** (no model change) | 0.92367 ± 0.00909 | 0.94773 | **Std cut 41%** (0.0155 → 0.0091). Year distribution per fold now within 5-9pp of target (was 19-37pp). Mean essentially unchanged. LB −0.00005 vs Exp 9 (noise — final fit n_estimators shifted from 238 → 227 with new CV). CV is now reliable for small deltas — critical before Optuna. |
+| 9c | Try `n_estimators = int(np.mean(best_iters)) = 110` instead of max=227 for final fit | (CV unchanged) | 0.94713 | LB −0.0006 vs Exp 9b. Mean undershoots; max is the right choice for final fit. **Keep using `np.max(best_iters)`.** |
+| 9d | Try `n_estimators = int(np.max(best_iters) * 1.10) = 249` for final fit | (CV unchanged) | 0.94779 | LB +0.00006 vs Exp 9b — within noise. n_estimators curve has flattened. Lever exhausted at ~227. New best LB by a hair. |
+| 10 | Sweep `sample_weight` for original rows: tested 0.75, 1.25, 1.5, 2 (prior), 5, 10 | (didn't log per-trial) | 0.94751, **0.94832**, 0.94807, 0.94779, 0.94667, 0.94467 | **Clear inverse-U curve with peak at weight ≈ 1.25 (LB 0.94832).** Prior default of 2.0 was over-weighting; heavy weights actively hurt. Original data provides modest real signal but the model wants only mild emphasis. **New best LB 0.94832; set weight to 1.25.** |
