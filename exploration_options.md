@@ -61,6 +61,8 @@
 - **Encoding `year` as categorical (Exp 9) was a clean +0.005 LB.** Year's response to target is non-monotonic (2023 anomaly), so numeric splits are inefficient. Categorical partition splits isolate 2023 in one node. Cleaner than the year_freq attempt (Exp 8), which overfit (CV up, LB down).
 - **Importance ranking is not a proxy for score** (Exp 8 lesson). Year_freq + compound_freq looked promising on importance redistribution, but the actual score went the wrong direction. Always validate with CV/LB.
 - **StratifiedGroupKFold stratifies on positives only, not on other features.** With 2023's anomalous low pit rate, the default behavior produced uneven year distributions across folds (2024 spanned 15%-52% across folds). Fix: pass a synthetic stratification key combining target and year (`pitnextlap + '_' + year`) to `.split()`. Cut fold-AUC std by 41% without changing the model. Worth doing before any small-delta tuning (Optuna).
+- **LightGBM beats XGBoost on this data, and blending both adds more.** LGBM alone: +0.00077 LB over XGB. Blend (0.30/0.70): +0.0006 LB over LGBM alone. Different inductive biases (leaf-wise vs level-wise tree growth) capture different patterns. The OOF AUC improvement from blending predicted the LB improvement within noise — OOF is a trustworthy signal for blend-weight selection.
+- **Compound × stint interaction features don't help.** Tried both integer-product encoding (Exp 11) and combined categorical (Exp 12); both underperformed by 0.0005+ on LB. Reinforces the S6E4 lesson: tree models with `enable_categorical=True` already find interactions between low-cardinality categoricals via separate splits — pre-engineering them is redundant or noisy.
 
 ## CV-LB Divergence (Exp 2)
 - Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
@@ -86,13 +88,13 @@
 
 ## Plan for Rest of Month
 - **Optuna deferred to end of month.** Tuning hyperparameters on a feature set that may still change wastes the search. Save Optuna for the final feature set.
-- **Current best: LB 0.94832** (Exp 10) — sample_weight=1.25 on original, year as categorical, no driver/wet_race/avg_stint_per_race, StratifiedGroupKFold with combined `(pitnextlap, year)` stratification key, n_estimators=max(best_iters) for final fit.
+- **Current best: LB 0.94967** (Exp 14, blend of XGB + LGBM). Pipeline: xgboost.ipynb + lightgbm.ipynb each save OOF + test predictions to archive/; blender.ipynb finds optimal alpha on OOF (0.30 × XGB + 0.70 × LGBM) and produces the final submission.
 - **Priority order for remaining experiments:**
   1. ~~**Reality-check the original blend.**~~ **Done (Exp 10).** Sweep showed clear inverse-U peak at weight 1.25; original provides modest real signal. Settled.
-  2. **Model class blend (LightGBM + CatBoost averaged with XGBoost).** Standard +0.001-0.003 lever, different inductive biases. **Next.**
-  3. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical.
+  2. ~~**Model class blend.**~~ **Done (Exp 13 standalone, Exp 14 blend).** LightGBM beats XGBoost individually; blend gives +0.0006 LB on top. Settled.
+  3. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical. **Next.**
   4. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
-- **Then Optuna** on the locked-in feature set.
+- **Then Optuna** on the locked-in feature set, run separately for XGB and LGBM, then re-blend.
 
 ## Data Integrity Findings (2026-05-01)
 
@@ -256,3 +258,5 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 10 | Sweep `sample_weight` for original rows: tested 0.75, 1.25, 1.5, 2 (prior), 5, 10 | (didn't log per-trial) | 0.94751, **0.94832**, 0.94807, 0.94779, 0.94667, 0.94467 | **Clear inverse-U curve with peak at weight ≈ 1.25 (LB 0.94832).** Prior default of 2.0 was over-weighting; heavy weights actively hurt. Original data provides modest real signal but the model wants only mild emphasis. **New best LB 0.94832; set weight to 1.25.** |
 | 11 | + `stint_x_compound` = compound_score × stint (HARD=5, MEDIUM=4, SOFT=3, INTER=2, WET=1) | (not logged) | 0.94785 | LB −0.00047. Pre-engineered product didn't help — confirms S6E4 lesson. Integer encoding collapses 2D info into 1D and creates spurious equivalences (5th-stint-WET = 1st-stint-HARD = 5). Rollback. |
 | 12 | + `compound_stint` = combined categorical (`compound + '_' + stint`) | (not logged) | 0.94779 | LB −0.00053. Combined categorical confirms tree was already handling compound × stint interactions natively via separate splits. Both forms of compound-stint interaction (Exp 11, 12) underperformed; the feature is redundant. Rollback. |
+| 13 | **LightGBM as standalone model** (same features, CV, sample_weight as Exp 10) | 0.92742 ± 0.00857 | 0.94909 | **Model-class switch: CV +0.00375, LB +0.00077 vs XGBoost.** Both directions move together — real model-class win, not overfit. LightGBM's leaf-wise growth + native categorical handling fits this data better than XGBoost's level-wise growth. Best_iter much higher (mean 428 vs 131) and wider range (161-813). |
+| 14 | **Linear blend: 0.30 × XGB + 0.70 × LGBM** (alpha found via OOF grid search) | OOF: 0.93152 (+0.00076 vs best single) | **0.94967** | LB +0.00058 vs LGBM standalone — in predicted +0.0003 to +0.0010 range. LGBM dominates at 70%, but XGB contributes real minority signal. Standard blending lever paid off. **New best LB.** |
