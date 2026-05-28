@@ -1,0 +1,20 @@
+{
+  "best_params": {
+    "learning_rate": 0.010241688646394851,
+    "num_leaves": 213,
+    "max_depth": 13,
+    "min_child_samples": 48,
+    "feature_fraction": 0.5117912691005907,
+    "bagging_fraction": 0.8764605395441685,
+    "bagging_freq": 2,
+    "reg_alpha": 0.17857389762277054,
+    "reg_lambda": 4.5309707267304017e-07,
+    "min_split_gain": 0.033614214282743554
+  },
+  "mean_auc_10fold_at_n_est_2000": 0.93153,
+  "std_auc_10fold_at_n_est_2000": 0.00849,
+  "mean_auc_10fold_at_n_est_5000": 0.93162,
+  "std_auc_10fold_at_n_est_5000": 0.00849,
+  "best_iters_at_n_est_5000": [2140, 1403, 1154, 1276, 894, 1997, 2267, 1948, 2450, 1791],
+  "note": "n_estimators=2000 was capping fold 0 at best_iter 1992; lifting to 5000 was CV-neutral (+0.00009) but +0.00071 LB on the blender. Source: optuna_lgbm.ipynb 60-trial search."
+}

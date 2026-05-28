@@ -63,6 +63,8 @@
 - **StratifiedGroupKFold stratifies on positives only, not on other features.** With 2023's anomalous low pit rate, the default behavior produced uneven year distributions across folds (2024 spanned 15%-52% across folds). Fix: pass a synthetic stratification key combining target and year (`pitnextlap + '_' + year`) to `.split()`. Cut fold-AUC std by 41% without changing the model. Worth doing before any small-delta tuning (Optuna).
 - **LightGBM beats XGBoost on this data, and blending both adds more.** LGBM alone: +0.00077 LB over XGB. Blend (0.30/0.70): +0.0006 LB over LGBM alone. Different inductive biases (leaf-wise vs level-wise tree growth) capture different patterns. The OOF AUC improvement from blending predicted the LB improvement within noise — OOF is a trustworthy signal for blend-weight selection.
 - **Compound × stint interaction features don't help.** Tried both integer-product encoding (Exp 11) and combined categorical (Exp 12); both underperformed by 0.0005+ on LB. Reinforces the S6E4 lesson: tree models with `enable_categorical=True` already find interactions between low-cardinality categoricals via separate splits — pre-engineering them is redundant or noisy.
+- **Optuna tuning paid off, but only after fixing the n_estimators ceiling.** XGB tuned: LB 0.94731 → 0.95119 (+0.00388). LGBM tuned at the default n_estimators=2000 hit the cap on multiple folds at the low tuned LR (0.0102) — CV looked fine (0.93153) but the blend with capped-LGBM scored *worse* on LB than tuned-XGB alone (0.95097 vs 0.95119). Bumping `n_estimators` to 5000 barely moved CV (+0.00009) but moved LB +0.00071 to 0.95168. The capped LGBM's predictions were subtly miscalibrated in a way CV couldn't see. **Lesson: after pasting optuna params back into the canonical notebook, always inspect per-fold `best_iter`. If any fold is within ~10% of `n_estimators`, bump the cap to at least 2.5× the observed max.**
+- **Blend diversity is tapped.** Tuned XGB and tuned LGBM correlate at 0.9905 (was 0.97 pre-tuning). Linear blending now adds only ~0.0005 LB. Next gain has to come from a structurally different model (CatBoost, NN) or seed-bagging — not from more retuning of the same two GBMs.
 
 ## CV-LB Divergence (Exp 2)
 - Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
@@ -87,14 +89,15 @@
 - ~~**Class balance**: pit events are rare per lap — likely 5–10% positive.~~ **Resolved:** ~20% positive overall, but heavily year-dependent (1% in 2023, ~27-30% other years).
 
 ## Plan for Rest of Month
-- **Optuna deferred to end of month.** Tuning hyperparameters on a feature set that may still change wastes the search. Save Optuna for the final feature set.
-- **Current best: LB 0.94967** (Exp 14, blend of XGB + LGBM). Pipeline: xgboost.ipynb + lightgbm.ipynb each save OOF + test predictions to archive/; blender.ipynb finds optimal alpha on OOF (0.30 × XGB + 0.70 × LGBM) and produces the final submission.
+- **Current best: LB 0.95168** (Exp 19, blend of tuned XGB + tuned LGBM with n_estimators=5000). Pipeline unchanged: optuna_xgb.ipynb / optuna_lgbm.ipynb produce best_params, user pastes them into the canonical xgboost.ipynb / lightgbm.ipynb, blender.ipynb finds optimal alpha on OOF (~0.49 × XGB + 0.51 × LGBM) and produces the final submission.
 - **Priority order for remaining experiments:**
-  1. ~~**Reality-check the original blend.**~~ **Done (Exp 10).** Sweep showed clear inverse-U peak at weight 1.25; original provides modest real signal. Settled.
-  2. ~~**Model class blend.**~~ **Done (Exp 13 standalone, Exp 14 blend).** LightGBM beats XGBoost individually; blend gives +0.0006 LB on top. Settled.
-  3. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical. **Next.**
-  4. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
-- **Then Optuna** on the locked-in feature set, run separately for XGB and LGBM, then re-blend.
+  1. ~~**Reality-check the original blend.**~~ **Done (Exp 10).** Settled.
+  2. ~~**Model class blend.**~~ **Done (Exp 13/14).** Settled.
+  3. ~~**Optuna tuning of XGB and LGBM.**~~ **Done (Exp 15-19).** +0.002 LB from tuning, gated on lifting the LGBM n_estimators ceiling. Settled.
+  4. **Seed-bagging XGB** — refit the tuned XGB at 5 different `random_state` values and average. ~30 min on GPU, almost guaranteed small uplift, very low risk. **Next.**
+  5. **CatBoost as a third model** — different categorical handling (ordered target stats vs LGBM's histogram splits) on a dataset where `race`/`compound`/`year_cat` are dominant. Could deliver genuine diversity to break the 0.9905 correlation ceiling. ~1 hr to wire up + tune.
+  6. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical. Lower priority now that tuning shifted the bottleneck to diversity.
+  7. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
 
 ## Data Integrity Findings (2026-05-01)
 
@@ -188,11 +191,11 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 - [ ] OHE only for correlation analysis or non-tree models
 
 ### Model Options
-- [ ] XGBoost (default starting point)
-- [ ] LightGBM
-- [ ] CatBoost
-- [ ] Hyperparameter tuning with Optuna (TPE sampler + median pruner)
-- [ ] Ensemble/stacking
+- [x] XGBoost (Exp 0+, default starting point)
+- [x] LightGBM (Exp 13, beats XGB on this data)
+- [ ] CatBoost — different categorical handling, best candidate for diversity in the blend
+- [x] Hyperparameter tuning with Optuna (TPE sampler + median pruner) — Exp 15-19, +0.002 LB after lifting the LGBM n_estimators ceiling
+- [x] Ensemble/stacking (Exp 14 linear blend, Exp 17/19 retuned). Diversity ceiling reached at 0.9905 correlation; next ensemble gain needs a structurally different model or seed bagging.
 
 ### Advanced
 - [ ] Blend in original dataset if available
@@ -218,6 +221,7 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 - **Optuna with TPE sampler + median pruner is efficient.** 30 trials with 5-fold CV during tuning, then validate winner on 10-fold.
 - **Use early stopping per fold** to let each fold pick its own `n_estimators`. For final fit on all data (no validation), either remove early stopping (default 100 trees) or set `n_estimators` to roughly the average best_iteration seen during CV.
 - **Pass `sample_weight` per fold** (`compute_sample_weight('balanced', y_train)`) — not globally — and pass `sample_weight_eval_set` so early stopping evaluates on weighted validation.
+- **After tuning, always verify `n_estimators` isn't capping early stopping** (S6E5 Exps 18-19). When optuna picks a low LR (~0.01), the model needs many more trees. If `best_iter` lands within ~10% of `n_estimators` on any fold, the model is under-fit at the cap. CV barely reflects this; LB and blend value suffer disproportionately. Bump the cap to at least 2.5× the observed max and re-run.
 
 ### XGBoost Specifics (3.x)
 - `enable_categorical=True` works well; convert categorical columns with `.astype('category')`.
@@ -259,4 +263,10 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 11 | + `stint_x_compound` = compound_score × stint (HARD=5, MEDIUM=4, SOFT=3, INTER=2, WET=1) | (not logged) | 0.94785 | LB −0.00047. Pre-engineered product didn't help — confirms S6E4 lesson. Integer encoding collapses 2D info into 1D and creates spurious equivalences (5th-stint-WET = 1st-stint-HARD = 5). Rollback. |
 | 12 | + `compound_stint` = combined categorical (`compound + '_' + stint`) | (not logged) | 0.94779 | LB −0.00053. Combined categorical confirms tree was already handling compound × stint interactions natively via separate splits. Both forms of compound-stint interaction (Exp 11, 12) underperformed; the feature is redundant. Rollback. |
 | 13 | **LightGBM as standalone model** (same features, CV, sample_weight as Exp 10) | 0.92742 ± 0.00857 | 0.94909 | **Model-class switch: CV +0.00375, LB +0.00077 vs XGBoost.** Both directions move together — real model-class win, not overfit. LightGBM's leaf-wise growth + native categorical handling fits this data better than XGBoost's level-wise growth. Best_iter much higher (mean 428 vs 131) and wider range (161-813). |
-| 14 | **Linear blend: 0.30 × XGB + 0.70 × LGBM** (alpha found via OOF grid search) | OOF: 0.93152 (+0.00076 vs best single) | **0.94967** | LB +0.00058 vs LGBM standalone — in predicted +0.0003 to +0.0010 range. LGBM dominates at 70%, but XGB contributes real minority signal. Standard blending lever paid off. **New best LB.** |
+| 14 | **Linear blend: 0.30 × XGB + 0.70 × LGBM** (alpha found via OOF grid search) | OOF: 0.93152 (+0.00076 vs best single) | **0.94967** | LB +0.00058 vs LGBM standalone — in predicted +0.0003 to +0.0010 range. LGBM dominates at 70%, but XGB contributes real minority signal. Standard blending lever paid off. **Prior best LB.** |
+| 15 | **Optuna XGB** (80 trials, TPE+median pruner, 5-fold search → 10-fold validate on GPU) | 0.93164 ± 0.00862 (10-fold) | — | Best params: LR 0.018, max_depth 12, deep+narrow with heavy column sampling. CV jumped +0.00787 vs Exp 13's baseline XGB. Validates that tuning has real headroom once feature set is locked. |
+| 16 | **Optuna LGBM** (60 trials, same config) at n_estimators=2000 cap | 0.93153 ± 0.00849 | — | Best params: LR 0.0102 (very low), num_leaves 213, max_depth 13. CV +0.00411 vs Exp 13. **But fold 0 hit best_iter=1992/2000 — capped.** Flagged ceiling risk before submission. |
+| 17 | Blend tuned XGB (Exp 15) + capped-tuned LGBM (Exp 16), alpha=0.50 | OOF: 0.93578 | 0.95097 | **LB underperformed sub_25 (single-model tuned XGB at 0.95119) despite higher OOF.** First signal that the capped LGBM was poisoning the blend. |
+| **sub_25** | Single-model tuned XGB alone | — | 0.95119 | +0.00152 over Exp 14 baseline blend. Tuning XGB alone is worth +0.0015 LB. |
+| 18 | Re-run LGBM with n_estimators=5000 (uncap), same tuned params | 0.93162 ± 0.00849 | — | Per-fold best_iters now span 894–2450 (max well under the new cap; early stopping triggers cleanly). **CV moved only +0.00009** — capping looked CV-neutral. |
+| **19** | **Re-blend tuned XGB + uncapped-tuned LGBM, alpha≈0.49** | OOF: ~0.93578 (within noise of Exp 17) | **0.95168** | **LB +0.00071 over Exp 17 from a +0.00009 CV move.** The capped LGBM was hurting the blend in a way CV couldn't see — fully-fit predictions are subtly better-calibrated even at near-identical AUC. Blend correlation now 0.9905 (was 0.97 pre-tuning); diversity headroom largely exhausted. **New best LB.** |
