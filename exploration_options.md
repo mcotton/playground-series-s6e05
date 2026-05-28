@@ -64,7 +64,10 @@
 - **LightGBM beats XGBoost on this data, and blending both adds more.** LGBM alone: +0.00077 LB over XGB. Blend (0.30/0.70): +0.0006 LB over LGBM alone. Different inductive biases (leaf-wise vs level-wise tree growth) capture different patterns. The OOF AUC improvement from blending predicted the LB improvement within noise — OOF is a trustworthy signal for blend-weight selection.
 - **Compound × stint interaction features don't help.** Tried both integer-product encoding (Exp 11) and combined categorical (Exp 12); both underperformed by 0.0005+ on LB. Reinforces the S6E4 lesson: tree models with `enable_categorical=True` already find interactions between low-cardinality categoricals via separate splits — pre-engineering them is redundant or noisy.
 - **Optuna tuning paid off, but only after fixing the n_estimators ceiling.** XGB tuned: LB 0.94731 → 0.95119 (+0.00388). LGBM tuned at the default n_estimators=2000 hit the cap on multiple folds at the low tuned LR (0.0102) — CV looked fine (0.93153) but the blend with capped-LGBM scored *worse* on LB than tuned-XGB alone (0.95097 vs 0.95119). Bumping `n_estimators` to 5000 barely moved CV (+0.00009) but moved LB +0.00071 to 0.95168. The capped LGBM's predictions were subtly miscalibrated in a way CV couldn't see. **Lesson: after pasting optuna params back into the canonical notebook, always inspect per-fold `best_iter`. If any fold is within ~10% of `n_estimators`, bump the cap to at least 2.5× the observed max.**
-- **Blend diversity is tapped.** Tuned XGB and tuned LGBM correlate at 0.9905 (was 0.97 pre-tuning). Linear blending now adds only ~0.0005 LB. Next gain has to come from a structurally different model (CatBoost, NN) or seed-bagging — not from more retuning of the same two GBMs.
+- **Blend diversity is tapped between XGB and LGBM.** Tuned XGB and tuned LGBM correlate at 0.9905 (was 0.97 pre-tuning). Linear blending the two now adds only ~0.0005 LB.
+- **CatBoost has genuinely different predictions.** Untuned CatBoost OOF correlates with XGB/LGBM at 0.96 (vs 0.99 between the GBMs) — confirms the inductive-bias diversity (ordered target stats + oblivious trees + ordered boosting) is real, not just hype. The 0.96 correlation is the gap a 3-way blend should exploit.
+- **But blending in an under-tuned model with strong tuned ones can hurt LB even when OOF says it should help (Exp 21).** Untuned CatBoost OOF was 0.93130, ~0.004 below the tuned GBMs. The 3-way OOF optimizer gave it 27% weight to exploit the diversity, and OOF jumped +0.00067 to 0.93645. But LB went the other way: 0.95168 → 0.95144 (-0.00024). **Diversity helps only if the diverse model is also strong.** Lesson for next time: tune every blend ingredient before blending.
+- **OOF→LB reliability scales with effect size.** Two cases of OOF/LB divergence now logged: (a) +0.00009 OOF → +0.00071 LB (LGBM ceiling fix, in our favor), (b) +0.00067 OOF → -0.00024 LB (untuned CB in 3-way blend, against us). Pattern: OOF moves smaller than ~0.0003 are within LB noise; OOF moves of 0.001+ track LB reliably (sub_25's +0.0036 OOF → +0.0015 LB held up). Don't burn submissions chasing OOF gains below the threshold.
 
 ## CV-LB Divergence (Exp 2)
 - Adding the original dataset moved CV down 0.0070 but LB up 0.0017. CV std widened from 0.010 → 0.014.
@@ -89,15 +92,16 @@
 - ~~**Class balance**: pit events are rare per lap — likely 5–10% positive.~~ **Resolved:** ~20% positive overall, but heavily year-dependent (1% in 2023, ~27-30% other years).
 
 ## Plan for Rest of Month
-- **Current best: LB 0.95168** (Exp 19, blend of tuned XGB + tuned LGBM with n_estimators=5000). Pipeline unchanged: optuna_xgb.ipynb / optuna_lgbm.ipynb produce best_params, user pastes them into the canonical xgboost.ipynb / lightgbm.ipynb, blender.ipynb finds optimal alpha on OOF (~0.49 × XGB + 0.51 × LGBM) and produces the final submission.
+- **Current best: LB 0.95168** (sub_27, Exp 19, blend of tuned XGB + tuned LGBM at n_estimators=5000). Pipeline: optuna_xgb / optuna_lgbm / optuna_catboost produce best_params; user pastes them into the canonical xgboost.ipynb / lightgbm.ipynb / catboost.ipynb; blender3.ipynb (3-way simplex grid search) or blender.ipynb (2-way alpha sweep) produces the final submission.
 - **Priority order for remaining experiments:**
   1. ~~**Reality-check the original blend.**~~ **Done (Exp 10).** Settled.
   2. ~~**Model class blend.**~~ **Done (Exp 13/14).** Settled.
-  3. ~~**Optuna tuning of XGB and LGBM.**~~ **Done (Exp 15-19).** +0.002 LB from tuning, gated on lifting the LGBM n_estimators ceiling. Settled.
-  4. **Seed-bagging XGB** — refit the tuned XGB at 5 different `random_state` values and average. ~30 min on GPU, almost guaranteed small uplift, very low risk. **Next.**
-  5. **CatBoost as a third model** — different categorical handling (ordered target stats vs LGBM's histogram splits) on a dataset where `race`/`compound`/`year_cat` are dominant. Could deliver genuine diversity to break the 0.9905 correlation ceiling. ~1 hr to wire up + tune.
-  6. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical. Lower priority now that tuning shifted the bottleneck to diversity.
-  7. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
+  3. ~~**Optuna tuning of XGB and LGBM.**~~ **Done (Exp 15-19).** +0.002 LB. Settled.
+  4. ~~**CatBoost as a third model.**~~ **Partial (Exp 20-21).** Diversity is real (corr 0.96), but untuned CB hurt the blend on LB. **Next: tune it.**
+  5. **Tune CatBoost with optuna** (`optuna_catboost.ipynb` is staged) — push single OOF from 0.93130 toward 0.935 so its 3-way-blend weight is "earned" rather than "diversity-charity". Same workflow as the XGB/LGBM optuna runs. **Highest-leverage next step.**
+  6. **Seed-bagging XGB** — refit the tuned XGB at 5 different `random_state` values and average. ~30 min on GPU, almost guaranteed small uplift, very low risk. Good as a parallel track while CatBoost tunes.
+  7. **Pseudo-labeling** — train on confident test predictions added to train. Higher risk, +0.001-0.003 typical. After CatBoost is tuned.
+  8. **Year-conditional aggregates** — given how dominant `year` is, features like "tyrelife relative to year-typical at this lapnumber" might capture extra signal. Lower priority.
 
 ## Data Integrity Findings (2026-05-01)
 
@@ -193,9 +197,9 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 ### Model Options
 - [x] XGBoost (Exp 0+, default starting point)
 - [x] LightGBM (Exp 13, beats XGB on this data)
-- [ ] CatBoost — different categorical handling, best candidate for diversity in the blend
-- [x] Hyperparameter tuning with Optuna (TPE sampler + median pruner) — Exp 15-19, +0.002 LB after lifting the LGBM n_estimators ceiling
-- [x] Ensemble/stacking (Exp 14 linear blend, Exp 17/19 retuned). Diversity ceiling reached at 0.9905 correlation; next ensemble gain needs a structurally different model or seed bagging.
+- [x] CatBoost (Exp 20-21) — ordered target stats + oblivious trees give corr ~0.96 with the GBMs (vs 0.99 between them). Diversity is real, but untuned single-OOF is 0.004 below tuned GBMs; needs its own optuna run before it earns its blend weight.
+- [x] Hyperparameter tuning with Optuna (TPE sampler + median pruner) — Exp 15-19, +0.002 LB after lifting the LGBM n_estimators ceiling. Same pattern available for CatBoost (`optuna_catboost.ipynb`).
+- [x] Ensemble/stacking (Exp 14 linear blend, Exp 17/19 retuned, Exp 21 3-way). 3-way blender with simplex grid search in `blender3.ipynb`. Within-family (XGB↔LGBM) diversity ceiling reached at 0.99 corr; cross-family (vs CatBoost) diversity at 0.96 corr is the real lever.
 
 ### Advanced
 - [ ] Blend in original dataset if available
@@ -269,4 +273,6 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 17 | Blend tuned XGB (Exp 15) + capped-tuned LGBM (Exp 16), alpha=0.50 | OOF: 0.93578 | 0.95097 | **LB underperformed sub_25 (single-model tuned XGB at 0.95119) despite higher OOF.** First signal that the capped LGBM was poisoning the blend. |
 | **sub_25** | Single-model tuned XGB alone | — | 0.95119 | +0.00152 over Exp 14 baseline blend. Tuning XGB alone is worth +0.0015 LB. |
 | 18 | Re-run LGBM with n_estimators=5000 (uncap), same tuned params | 0.93162 ± 0.00849 | — | Per-fold best_iters now span 894–2450 (max well under the new cap; early stopping triggers cleanly). **CV moved only +0.00009** — capping looked CV-neutral. |
-| **19** | **Re-blend tuned XGB + uncapped-tuned LGBM, alpha≈0.49** | OOF: ~0.93578 (within noise of Exp 17) | **0.95168** | **LB +0.00071 over Exp 17 from a +0.00009 CV move.** The capped LGBM was hurting the blend in a way CV couldn't see — fully-fit predictions are subtly better-calibrated even at near-identical AUC. Blend correlation now 0.9905 (was 0.97 pre-tuning); diversity headroom largely exhausted. **New best LB.** |
+| **19** | **Re-blend tuned XGB + uncapped-tuned LGBM, alpha≈0.49** | OOF: ~0.93578 (within noise of Exp 17) | **0.95168** | **LB +0.00071 over Exp 17 from a +0.00009 CV move.** The capped LGBM was hurting the blend in a way CV couldn't see — fully-fit predictions are subtly better-calibrated even at near-identical AUC. Blend correlation now 0.9905 (was 0.97 pre-tuning); diversity headroom largely exhausted. **Best LB through end of session.** |
+| 20 | **CatBoost as third model** (untuned defaults: iterations=5000, LR=0.05, depth=6, GPU) | 0.93130 (10-fold) | — | Single-model AUC 0.004 below tuned GBMs — expected, since this is just defaults. **But corr with XGB only 0.957, with LGBM only 0.965** (vs 0.99 between XGB↔LGBM). Ordered target stats + oblivious trees + ordered boosting genuinely partition the space differently. Diversity confirmed; strength deferred to tuning. |
+| 21 | 3-way blend (`blender3.ipynb`, simplex grid step 0.01): XGB=0.52, LGBM=0.21, CAT=0.27 | OOF: 0.93645 (+0.00067 vs Exp 19) | 0.95144 | **LB regression (-0.00024).** OOF optimizer over-weighted untuned CAT to chase the diversity bonus, but the test set penalized that allocation. **Lesson: diversity helps only when the diverse model is also strong.** Tune CatBoost before re-blending. Pipeline ready: `optuna_catboost.ipynb` staged with the same 5-fold-search → 10-fold-validate pattern as the XGB/LGBM runs. |
