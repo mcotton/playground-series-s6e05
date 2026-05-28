@@ -1,0 +1,26 @@
+{
+  "best_params": {
+    "learning_rate": 0.06046142783199642,
+    "depth": 10,
+    "l2_leaf_reg": 10.403790011946096,
+    "bagging_temperature": 0.02594475248352794,
+    "border_count": 254,
+    "random_strength": 4.871050515345347,
+    "min_data_in_leaf": 26
+  },
+  "best_value_5fold": 0.9266151140006554,
+  "mean_auc_10fold": 0.9254202637951392,
+  "std_auc_10fold": 0.011302778647541404,
+  "best_iters": [
+    472,
+    87,
+    409,
+    679,
+    138,
+    433,
+    516,
+    606,
+    834,
+    175
+  ]
+}
