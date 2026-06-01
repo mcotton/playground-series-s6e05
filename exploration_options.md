@@ -279,3 +279,22 @@ Aggregations across combinations the tree can't isolate cheaply, even with nativ
 | 20 | **CatBoost as third model** (untuned defaults: iterations=5000, LR=0.05, depth=6, GPU) | 0.93130 (10-fold) | — | Single-model AUC 0.004 below tuned GBMs — expected, since this is just defaults. **But corr with XGB only 0.957, with LGBM only 0.965** (vs 0.99 between XGB↔LGBM). Ordered target stats + oblivious trees + ordered boosting genuinely partition the space differently. Diversity confirmed; strength deferred to tuning. |
 | 21 | 3-way blend (`blender3.ipynb`, simplex grid step 0.01): XGB=0.52, LGBM=0.21, CAT=0.27 | OOF: 0.93645 (+0.00067 vs Exp 19) | 0.95144 | **LB regression (-0.00024).** OOF optimizer over-weighted untuned CAT to chase the diversity bonus, but the test set penalized that allocation. **Lesson: diversity helps only when the diverse model is also strong.** Tune CatBoost before re-blending. Pipeline ready: `optuna_catboost.ipynb` staged with the same 5-fold-search → 10-fold-validate pattern as the XGB/LGBM runs. |
 | 22 | **Optuna CatBoost** (60 trials, tuned params pasted inline into `catboost.ipynb`) + **equal-weight** 3-way blend (XGB/LGBM/CAT = 1/3 each), sub_29 | CB single OOF: **0.92997** (10-fold 0.92538 ± 0.01122) · blend OOF: 0.93610 | **0.95166** | **Tuning made CatBoost *worse*, not stronger** — single OOF 0.92997 < untuned 0.93130 (search overfit, picked depth=10, the search max; best_iter maxed at 802 so not a ceiling issue). Equal-weight 3-way **ties the 2-way champ** (0.95168, Δ−0.00002 = noise) and **beats sub_28's OOF-optimized 3-way (0.95144) by +0.00022 despite a *lower* OOF** — concrete proof the simplex weight-optimizer over-fits OOF and gives back LB; default to equal weights. **CatBoost confirmed a dead end on this comp — tuned or not, it only matches the 2-way. 2-way XGB+LGBM (sub_27, LB 0.95168) remains the pick.** |
+
+## Final Result
+- **Final submission: sub_27 (Exp 19)** — 2-way blend of tuned XGB + uncapped tuned LGBM, alpha ≈ 0.49.
+- **Public LB: 0.95168**
+- **Final placement: 715 / 3023 (top ~24%)**
+- **Private LB: +8 places over public.** Model generalized cleanly — no overfit to public LB jitter. The validation discipline (group-by-(race, year) CV, combined `(target, year)` stratification, rolling back when CV/LB diverged, dropping noisy features rather than tuning around them, defaulting to equal weights instead of OOF-optimized simplex weights) protected against the trap that hit competitors below us.
+- **Cumulative climb: 0.93671 → 0.95168 = +0.01497 LB** across 22 experiments, 6 of which were rolled back.
+- **Levers that mattered most:**
+  - Drop `driver` (Exp 6, +0.0086 LB) — biggest single gain.
+  - LightGBM as a model class (Exp 13, +0.0008 LB) over XGBoost.
+  - Optuna XGB tuning (sub_25, +0.0015 LB single-model).
+  - Re-blending with *uncapped* LGBM (Exp 19, +0.0007 LB) — the CV-invisible win that came from noticing a fold hit the n_estimators ceiling.
+  - `year` as categorical (Exp 9, +0.0055 LB).
+- **Levers that didn't:**
+  - Custom domain features (`wet_race`, `avg_stint_per_race`) — neutral to slightly negative.
+  - Frequency encoding (Exp 8) — overfit.
+  - Compound × stint interactions (Exp 11, 12) — redundant with native categorical splits.
+  - CatBoost as a third model — failed to add diversity strength once tuned; equal-weight 3-way tied the 2-way.
+- **Meta-lesson worth carrying:** for synthetic Playground data, the trap isn't "I didn't find the right feature" — it's "I overfit to whichever LB submission happened to score highest." Conservative CV + matching-rather-than-chasing LB delta is what differentiates private-LB rank from public-LB rank.
